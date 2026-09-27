@@ -1,0 +1,70 @@
+{
+  "name": "multigame-viewer",
+  "version": "0.1.0",
+  "description": "Four-game 2x2 viewing layout for YouTube TV on Windows, using real Chrome/Edge windows and OS window management.",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "npm run build && electron .",
+    "test": "npm run build && node --test \"dist/**/*.test.js\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "probe": "npm run build && electron dist/tools/probe.js",
+    "dist": "npm run build && electron-builder --win --x64"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "koffi": "^3.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
+    "typescript": "^7.0.2"
+  },
+  "productName": "MultiGame Viewer",
+  "private": true,
+  "author": "",
+  "build": {
+    "appId": "com.multigameviewer.app",
+    "productName": "MultiGame Viewer",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "!dist/test/**",
+      "!dist/tools/**",
+      "!dist/**/*.map",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/koffi/**",
+      "node_modules/@koromix/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "extraMetadata": {
+      "main": "dist/main/main.js"
+    }
+  }
+}
