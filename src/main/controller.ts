@@ -47,6 +47,8 @@ interface Slot {
   /** The user chose "Open on YouTube page": don't auto-fill this window. */
   watchPageOptOut: boolean;
   fillTimer: NodeJS.Timeout | null;
+  /** URL the current window was opened with ('' for adopted windows). */
+  launchedUrl: string;
 }
 
 type Banner = NonNullable<UiState['banner']> & { sticky?: boolean };
@@ -61,7 +63,7 @@ export class Controller {
   private tray: Tray | null = null;
   private browser: BrowserInstall | null = null;
   private hosts: BrowserHost[] = [];
-  private readonly slots: Slot[] = SLOT_IDS.map((id) => ({ id, hwnd: null, phase: 'closed', title: '', expected: null, needsPlace: false, placedAt: 0, opening: false, watchPageOptOut: false, fillTimer: null }));
+  private readonly slots: Slot[] = SLOT_IDS.map((id) => ({ id, hwnd: null, phase: 'closed', title: '', expected: null, needsPlace: false, placedAt: 0, opening: false, watchPageOptOut: false, fillTimer: null, launchedUrl: '' }));
   private display!: DisplayInfo;
   private areaPhys: Rect = { x: 0, y: 0, width: 0, height: 0 };
   private areaDip: Rect = { x: 0, y: 0, width: 0, height: 0 };
@@ -99,6 +101,9 @@ export class Controller {
   private readonly urls: UrlReader;
   private readonly gpu: GpuSampler;
   private maskWindows: { hwnd: number; rect: Rect }[] = [];
+  /** Old game windows that are being closed after a replacement (not strays). */
+  private readonly closing = new Set<number>();
+  private zSettleTimer: NodeJS.Timeout | null = null;
   private unhookWinEvents: (() => void) | null = null;
   private devServer: ReturnType<typeof startDevControl> = null;
 
@@ -203,8 +208,10 @@ export class Controller {
       const toOpen = this.signInMode ? [this.slots[0]] : this.slots;
       for (const slot of toOpen) if (!slot.hwnd) await this.openSlot(slot, this.launchUrlFor(slot.id));
       if (this.calibrationHwnd) {
-        win.requestClose(this.calibrationHwnd);
+        const cal = this.calibrationHwnd;
         this.calibrationHwnd = null;
+        this.closing.add(cal); // still claimed while it closes, so it isn't taken for a stray
+        void this.hosts[0].closeWindow(cal).finally(() => this.closing.delete(cal));
       }
     } finally {
       this.starting = false;
@@ -223,6 +230,15 @@ export class Controller {
         claimed.add(hwnd);
         this.attachWindow(slot, hwnd);
         adopted++;
+      }
+    }
+    // More windows than games (left over in the viewer's own profile): close the extras rather
+    // than let them be adopted as strays over a game later.
+    for (const host of new Set(this.hosts)) {
+      for (const extra of host.windows().filter((h) => !claimed.has(h))) {
+        this.log.info('Closing a leftover browser window from a previous session');
+        this.closing.add(extra);
+        void host.closeWindow(extra).finally(() => this.closing.delete(extra));
       }
     }
     if (adopted) this.log.info(`Adopted ${adopted} existing game window(s)`);
@@ -268,6 +284,8 @@ export class Controller {
     this.quitting = true;
     this.log.info('Shutting down');
     for (const t of this.timers) clearInterval(t);
+    for (const s of this.slots) if (s.fillTimer) clearTimeout(s.fillTimer);
+    if (this.zSettleTimer) clearTimeout(this.zSettleTimer);
     this.unhookWinEvents?.();
     this.hotkeys.setActive(false);
     this.store.flush();
@@ -312,6 +330,9 @@ export class Controller {
   private maybeAutoFill(slot: Slot): void {
     if (!this.settings.youtubeAutoFill || !this.settings.youtubeCleanPlayer || !this.player.available) return;
     if (slot.watchPageOptOut || slot.opening || !/\S - YouTube$/.test(slot.title)) return;
+    // The viewer's own player page also titles itself "<video> - YouTube"; it (and its
+    // watch-page fallback) never needs a lookup.
+    if (this.player.isPlayerUrl(slot.launchedUrl)) return;
     if (slot.fillTimer) clearTimeout(slot.fillTimer);
     slot.fillTimer = setTimeout(() => {
       slot.fillTimer = null;
@@ -326,6 +347,7 @@ export class Controller {
   private async fillTile(slot: Slot, auto: boolean): Promise<void> {
     const hwnd = slot.hwnd;
     if (!hwnd || slot.opening) return;
+    this.log.debug(`Game ${slot.id + 1}: looking up page address (${auto ? 'auto' : 'manual'})`);
     const url = await this.urls.read(hwnd, auto ? 3 : 4);
     if (slot.hwnd !== hwnd || slot.opening) return; // replaced meanwhile
     const r = url ? resolveLink(url) : null;
@@ -357,6 +379,7 @@ export class Controller {
     const set = new Set<number>();
     for (const s of this.slots) if (s.hwnd) set.add(s.hwnd);
     if (this.calibrationHwnd) set.add(this.calibrationHwnd);
+    for (const h of this.closing) set.add(h);
     return set;
   }
 
@@ -370,14 +393,20 @@ export class Controller {
     win.blackBorder(hwnd);
   }
 
-  private async openSlot(slot: Slot, url: string): Promise<void> {
-    if (slot.opening || !this.browser) return;
+  /** Open a new window for `slot`; resolves true if a window was attached. */
+  private async openSlot(slot: Slot, url: string): Promise<boolean> {
+    if (slot.opening || !this.browser || this.quitting) return false;
     slot.opening = true;
     slot.phase = 'starting';
     this.push();
     try {
       const hwnd = await this.hostFor(slot.id).openWindow(url, this.claimedWindows());
+      if (this.quitting) {
+        win.requestClose(hwnd);
+        return false;
+      }
       this.attachWindow(slot, hwnd);
+      slot.launchedUrl = url;
       if (!this.minimized) {
         this.placeSlot(slot);
         this.applyZOrder();
@@ -385,10 +414,12 @@ export class Controller {
         win.minimize(hwnd);
       }
       this.log.info(`Game ${slot.id + 1} window opened`);
+      return true;
     } catch (err) {
       slot.phase = 'closed';
       this.log.error(`Game ${slot.id + 1} could not be opened`, err);
       this.setBanner({ text: `Game ${slot.id + 1} could not be opened: ${(err as Error).message}`, kind: 'error', action: { label: 'Retry', command: { type: 'reopen', slot: slot.id } } });
+      return false;
     } finally {
       slot.opening = false;
       this.updateLabels();
@@ -398,14 +429,28 @@ export class Controller {
 
   /** Replace a game's window with a fresh one at `url` (the old one closes after the new one is up). */
   private async replaceSlot(slot: Slot, url: string): Promise<void> {
+    if (slot.opening || this.quitting) return;
     const old = slot.hwnd;
     slot.hwnd = null;
     slot.expected = null;
-    const host = this.hostFor(slot.id);
-    await this.openSlot(slot, url);
-    if (old) {
-      win.setRegion(old, null);
-      await host.closeWindow(old);
+    if (old) this.closing.add(old); // not a stray while we wait
+    const opened = await this.openSlot(slot, url);
+    if (!old) return;
+    if (!opened) {
+      // Keep the game that was playing rather than leaving an empty tile.
+      this.closing.delete(old);
+      if (!slot.hwnd && win.isAlive(old)) {
+        this.attachWindow(slot, old);
+        this.placeSlot(slot);
+        this.applyZOrder();
+        this.push();
+      }
+      return;
+    }
+    try {
+      await this.hostFor(slot.id).closeWindow(old);
+    } finally {
+      this.closing.delete(old);
     }
   }
 
@@ -433,6 +478,67 @@ export class Controller {
     }
   }
 
+  /**
+   * A game opened a window of its own (a link with target=_blank, the player's "Watch on
+   * YouTube", a support chat...). Rather than leave it floating over the grid, show it in the
+   * tile of the game the user was using and close that tile's previous window.
+   */
+  private adoptStrayWindows(): void {
+    if (this.starting || this.quitting || this.minimized || this.slots.some((s) => s.opening)) return;
+    const claimed = this.claimedWindows();
+    for (const host of this.hosts) {
+      for (const hwnd of host.windows()) {
+        if (claimed.has(hwnd)) continue;
+        claimed.add(hwnd);
+        const mine = this.slots.filter((s) => this.hostFor(s.id) === host);
+        const target =
+          mine.find((s) => s.id === this.lastFgSlot && s.hwnd) ?? mine.find((s) => !s.hwnd && !s.opening) ?? mine.find((s) => s.hwnd) ?? mine[0];
+        if (target) void this.adoptPopup(target, hwnd, host);
+      }
+    }
+  }
+
+  /**
+   * Show a game's new window in that game's tile. Links opened from an app window usually land
+   * in a regular tabbed browser window (tabs, address bar), so when the page address can be
+   * read we reopen it as a normal frameless game window; otherwise the window is used as-is.
+   */
+  private async adoptPopup(slot: Slot, hwnd: number, host: BrowserHost): Promise<void> {
+    this.closing.add(hwnd); // handled: don't pick it up again on the next pass
+    try {
+      this.log.info(`Game ${slot.id + 1} opened a new window; showing it in that tile`);
+      if (slot.fillTimer) clearTimeout(slot.fillTimer);
+      slot.fillTimer = null;
+      const url = await this.urls.read(hwnd, 3);
+      const r = url ? resolveLink(url) : null;
+      if (this.quitting) return;
+      if (r && !('error' in r) && !slot.opening) {
+        slot.watchPageOptOut = true; // the user deliberately opened this page
+        this.saveLink(slot.id, r.link);
+        await host.closeWindow(hwnd);
+        await this.replaceSlot(slot, r.link);
+      } else {
+        // Couldn't read it: use the window itself.
+        const old = slot.hwnd;
+        slot.watchPageOptOut = true;
+        this.closing.delete(hwnd);
+        this.attachWindow(slot, hwnd);
+        slot.launchedUrl = '';
+        this.placeSlot(slot);
+        this.applyZOrder();
+        this.updateLabels();
+        this.push();
+        if (old && old !== hwnd) {
+          this.closing.add(old);
+          void host.closeWindow(old).finally(() => this.closing.delete(old));
+        }
+      }
+      this.setBanner({ text: `Game ${slot.id + 1} opened a new page, so it now shows in that game's tile. Use the game's menu (YouTube TV / YouTube / Reopen) to go back.`, kind: 'info' });
+    } finally {
+      if (slot.hwnd !== hwnd) this.closing.delete(hwnd);
+    }
+  }
+
   private setPhase(slot: Slot, phase: SlotPhase): void {
     if (slot.phase === phase) return;
     slot.phase = phase;
@@ -445,6 +551,8 @@ export class Controller {
     if (this.quitting) return;
     const byHost = new Map<BrowserHost, Slot[]>();
     for (const s of gone) {
+      if (s.fillTimer) clearTimeout(s.fillTimer);
+      s.fillTimer = null;
       if (s.hwnd) this.placer.forget(s.hwnd);
       s.hwnd = null;
       s.expected = null;
@@ -478,6 +586,7 @@ export class Controller {
       this.restartLog.push(now);
       this.setBanner({ text: `${host.browser.name} stopped unexpectedly — restarting the affected game(s)…`, kind: 'warn' });
       setTimeout(() => {
+        if (this.quitting) return;
         for (const s of slots) if (!s.hwnd) void this.openSlot(s, this.launchUrlFor(s.id));
       }, 1500);
     } else {
@@ -541,6 +650,17 @@ export class Controller {
    * In full-screen mode the group is topmost (above the taskbar) while the viewer is active.
    */
   private applyZOrder(): void {
+    this.applyZOrderNow();
+    // Requests to browser windows are queued and land a moment later; one more pass (only
+    // one: the settle pass itself doesn't schedule another) converges the order.
+    if (this.zSettleTimer) clearTimeout(this.zSettleTimer);
+    this.zSettleTimer = setTimeout(() => {
+      this.zSettleTimer = null;
+      if (!this.quitting) this.applyZOrderNow();
+    }, 250);
+  }
+
+  private applyZOrderNow(): void {
     const topmost = this.settings.fullscreen && this.active && !this.minimized;
     const fg = win.foregroundWindow();
     // Order policy lives in core/stacking.ts (solo on top, rows top-down, masks over gaps).
@@ -553,12 +673,15 @@ export class Controller {
     });
     const hwndOf = (i: StackItem) => (i.kind === 'game' ? this.slots[i.slot].hwnd! : this.maskWindows[i.index].hwnd);
     const stack = [...order.map(hwndOf), this.overlays.backdropHwnd()]; // top -> bottom
-    for (const h of stack) if (win.isTopmost(h) !== topmost) win.setTopmost(h, topmost);
+    // Browser windows get queued (async) requests so a busy browser can never block the
+    // viewer's own UI thread; our own windows (masks, backdrop) are moved immediately.
+    const foreign = new Set(games.map((g) => g.hwnd!));
+    for (const h of stack) if (win.isTopmost(h) !== topmost) win.setTopmost(h, topmost, foreign.has(h));
     // Only pull the group in front of other apps while the user is working with the viewer;
     // this succeeds when we hold foreground rights (toolbar, hotkey, tray), otherwise the
     // chain below still keeps the group correctly ordered beneath the top window.
-    if ((this.active || this.starting) && stack[0] !== fg) win.setZOrder(stack[0], topmost ? C.HWND_TOPMOST : C.HWND_TOP);
-    for (let i = 1; i < stack.length; i++) win.setZOrder(stack[i], stack[i - 1]);
+    if ((this.active || this.starting) && stack[0] !== fg) win.setZOrder(stack[0], topmost ? C.HWND_TOPMOST : C.HWND_TOP, foreign.has(stack[0]));
+    for (let i = 1; i < stack.length; i++) win.setZOrder(stack[i], stack[i - 1], foreign.has(stack[i]));
     this.overlays.raiseOverlays();
   }
 
@@ -656,8 +779,7 @@ export class Controller {
       if (this.minimized) {
         if (inTransition) win.minimize(h);
         else this.restoreAll(); // user restored a game from the taskbar: bring everything back
-        if (!inTransition) return;
-        continue;
+        continue; // restoreAll re-lays everything out shortly
       }
       if (this.placer.isNativeFullscreen(h)) {
         if (slot.phase !== 'fullscreen') {
@@ -777,6 +899,7 @@ export class Controller {
     }, this.forceAudio);
     this.forceAudio = false;
     this.lastProcs = procs;
+    this.adoptStrayWindows();
   }
 
   private sampleStats(): void {
@@ -930,6 +1053,7 @@ export class Controller {
         return;
       }
       case 'guide':
+        slotOf(cmd.slot).watchPageOptOut = false;
         this.saveLink(cmd.slot, '');
         return void this.replaceSlot(slotOf(cmd.slot), this.settings.guideUrl);
       case 'fillTile':
@@ -950,9 +1074,11 @@ export class Controller {
         // The owner may block embedding, or the user wants comments/chat: full YouTube page.
         const link = this.settings.slotLinks[cmd.slot];
         if (!link) return;
-        return void this.replaceSlot(slotOf(cmd.slot), link).then(() => (slotOf(cmd.slot).watchPageOptOut = true));
+        slotOf(cmd.slot).watchPageOptOut = true; // before the page loads, so auto-fill leaves it alone
+        return void this.replaceSlot(slotOf(cmd.slot), link);
       }
       case 'reopen':
+        slotOf(cmd.slot).watchPageOptOut = false;
         return void this.replaceSlot(slotOf(cmd.slot), this.launchUrlFor(cmd.slot));
       case 'reloadAll':
         this.clearBanner();

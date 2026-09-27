@@ -117,13 +117,18 @@ export function regionBox(hwnd: number): Rect | null {
   return kind === C.ERROR_REGION || kind === C.NULLREGION ? null : toRect(r);
 }
 
-/** Put `hwnd` directly *below* `after` in z-order (Win32 semantics), or use HWND_TOP/HWND_TOPMOST etc. */
-export function setZOrder(hwnd: number, after: number): boolean {
-  return W.SetWindowPos(hwnd, after, 0, 0, 0, 0, C.SWP_NOMOVE | C.SWP_NOSIZE | C.SWP_NOACTIVATE | C.SWP_NOOWNERZORDER) !== 0;
+/**
+ * Put `hwnd` directly *below* `after` in z-order (Win32 semantics), or use HWND_TOP/HWND_TOPMOST.
+ * Use `async` for another process's window: the request is queued to that window's thread
+ * instead of waiting for it, so a busy browser can't stall the caller.
+ */
+export function setZOrder(hwnd: number, after: number, async = false): boolean {
+  const flags = C.SWP_NOMOVE | C.SWP_NOSIZE | C.SWP_NOACTIVATE | C.SWP_NOOWNERZORDER | (async ? C.SWP_ASYNCWINDOWPOS : 0);
+  return W.SetWindowPos(hwnd, after, 0, 0, 0, 0, flags) !== 0;
 }
 
-export function setTopmost(hwnd: number, topmost: boolean): boolean {
-  return setZOrder(hwnd, topmost ? C.HWND_TOPMOST : C.HWND_NOTOPMOST);
+export function setTopmost(hwnd: number, topmost: boolean, async = false): boolean {
+  return setZOrder(hwnd, topmost ? C.HWND_TOPMOST : C.HWND_NOTOPMOST, async);
 }
 
 export function isTopmost(hwnd: number): boolean {

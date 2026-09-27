@@ -40,6 +40,11 @@ export class YouTubePlayerServer {
     return this.port !== 0;
   }
 
+  /** True for URLs of this server's player page. */
+  isPlayerUrl(url: string): boolean {
+    return this.port !== 0 && url.startsWith(`http://127.0.0.1:${this.port}/player?`);
+  }
+
   urlFor(t: YouTubeTarget): string {
     return `http://127.0.0.1:${this.port}/player?${playerQuery(t)}`;
   }

@@ -30,6 +30,7 @@ export class Overlays {
   private toolbarSize = { width: 980, height: 46 };
   private areaDip: Rect = { x: 0, y: 0, width: 800, height: 600 };
   private lastState: UiState | null = null;
+  private ownCache: Set<number> | null = null;
   private readonly onIpc: (e: IpcMainEvent, cmd: unknown) => void;
 
   constructor(
@@ -86,7 +87,11 @@ export class Overlays {
       child.setAlwaysOnTop(true, 'pop-up-menu');
       child.removeMenu();
       this.labels[slot] = child;
-      child.on('closed', () => (this.labels[slot] = null));
+      this.ownCache = null;
+      child.on('closed', () => {
+        this.labels[slot] = null;
+        this.ownCache = null;
+      });
     });
 
     this.toolbar = new BrowserWindow({
@@ -115,9 +120,12 @@ export class Overlays {
     }
   }
 
-  ownHwnds(): Set<number> {
+  /** HWNDs of the viewer's own windows (cached; label windows invalidate it when they come and go). */
+  ownHwnds(): ReadonlySet<number> {
+    if (this.ownCache) return this.ownCache;
     const set = new Set<number>();
     for (const w of [this.backdrop, this.toolbar, ...this.labels]) if (w && !w.isDestroyed()) set.add(hwndOf(w));
+    this.ownCache = set;
     return set;
   }
 

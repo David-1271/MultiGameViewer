@@ -98,7 +98,10 @@ npm start
    to the player-only view by itself about a second later. The video restarts from the beginning
    when it switches. **Fill tile** (Ctrl+Alt+V) does it on demand, and Settings can turn the
    automatic switch off.
-5. The quadrant remembers its link and reopens it next time. **YouTube TV**, **Live guide** and
+5. The quadrant remembers its link and reopens it next time.
+6. If a page opens a **new window** (for example the video title link inside the player, or
+   a support chat link), that page takes over the tile it came from instead of floating over
+   the grid. Use the game's menu (YouTube TV, YouTube or Reopen) to go back. **YouTube TV**, **Live guide** and
    **YouTube** switch the quadrant back to a home page.
 
 Notes:
