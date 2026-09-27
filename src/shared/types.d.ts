@@ -31,6 +31,8 @@ export interface LayoutState {
 /** shared = one browser + one sign-in; separate = one browser per game (per-game audio control, sign in once per game). */
 export type SessionMode = 'shared' | 'separate';
 export type BrowserChoice = 'auto' | 'chrome' | 'edge';
+/** What a game opens when it has no saved link. */
+export type Service = 'youtubetv' | 'youtube';
 
 
 export interface Settings {
@@ -39,8 +41,16 @@ export interface Settings {
   /** Optional explicit browser executable; empty = auto-detect. */
   browserPath: string;
   sessionMode: SessionMode;
+  /** YouTube TV home page. */
   startUrl: string;
   guideUrl: string;
+  defaultService: Service;
+  /** Per-game saved link (canonical URL) or '' for the default service's home page. */
+  slotLinks: string[];
+  /** Play regular YouTube videos in the player-only page instead of the full watch page. */
+  youtubeCleanPlayer: boolean;
+  /** When you pick a video on a YouTube page, switch the tile to the player-only view. */
+  youtubeAutoFill: boolean;
   display: { id: number | null; bounds: Rect | null };
   layout: LayoutState;
   fullscreen: boolean;
@@ -77,6 +87,8 @@ export interface SlotView {
   number: number;
   name: string;
   title: string;
+  /** Saved link for this game ('' = default home page). */
+  link: string;
   phase: SlotPhase;
   muted: boolean;
   /** Grid position this slot currently occupies (0-3). */
@@ -141,6 +153,10 @@ export type UiCommand =
   | { type: 'toggleMasterMute' }
   | { type: 'reload'; slot: SlotId }
   | { type: 'guide'; slot: SlotId }
+  | { type: 'openLink'; slot: SlotId; link: string }
+  | { type: 'openHome'; slot: SlotId; service: Service }
+  | { type: 'openWatchPage'; slot: SlotId }
+  | { type: 'fillTile'; slot: SlotId }
   | { type: 'reopen'; slot: SlotId }
   | { type: 'reloadAll' }
   | { type: 'activate'; slot: SlotId }

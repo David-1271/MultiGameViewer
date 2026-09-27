@@ -125,6 +125,33 @@ The viewer only touches sessions belonging to its own browser processes, and app
 only when it changes or a session is new, so it never fights changes you make in the Volume
 Mixer.
 
+### Regular YouTube
+
+Pasted links are parsed in `core/links.ts`: watch, `youtu.be`, live, Shorts, embed and
+playlist forms, start times, bare video IDs. Only `https:` is accepted.
+
+* **Finding:** opening `youtube.com/embed/<id>` directly as a window fails with *Error 153
+  (video player configuration error)*. YouTube's embed player must run inside a real web page
+  that identifies itself (via the Referer).
+* **Design:** the controller serves a one-page player (`main/youtubePlayer.ts`) on
+  `127.0.0.1`. It listens on loopback only, has a single route, validates video and playlist
+  IDs strictly, sets a CSP, and rejects any other Host header (to block DNS rebinding). The page
+  embeds the video with YouTube's official IFrame Player API, the same way any website does.
+  So regular YouTube videos fill their quadrant with just the player.
+* **Fallbacks:** if the owner has disabled embedding (player errors 101/150/153), the page
+  switches itself to the normal watch page. If Chrome blocks autoplay with sound, it starts
+  muted.
+* The page copies the video title into the window title, so labels and chips show it.
+* **Browsing, then filling:** when a YouTube tile's window title turns into `<video> - YouTube`
+  (you clicked a video), the viewer reads that window's page address through **Windows UI
+  Automation**, the accessibility API screen readers use (`main/win32/uia.ts`). It reopens the
+  video in the player page. The lookup runs on a worker thread with a timeout, so a busy browser
+  can't stall the viewer. UI Automation does not flag the browser as automated
+  (`navigator.webdriver` stays false), and nothing is injected into the page. "Open on YouTube
+  page" and videos whose owners block embedding are exempt, so it never loops.
+* Channel pages, search and the home page open as ordinary pages. Each quadrant's link is saved
+  and reopened next launch.
+
 ### Monitors and DPI
 
 The controller is per-monitor-DPI aware. Layout is computed in physical pixels from the exact

@@ -65,3 +65,11 @@ test('a corrupt settings file is backed up and replaced by defaults', () => {
   assert.equal(errors.length, 1);
   assert.ok(fs.readdirSync(dir).some((n) => n.startsWith('settings.json.corrupt-')));
 });
+
+test('saved per-game links are validated and canonicalised on load', () => {
+  const s = normalizeSettings({ slotLinks: ['youtu.be/aqz-KE-bpKQ', 'javascript:alert(1)', 42, 'https://tv.youtube.com/live'], defaultService: 'youtube' });
+  assert.deepEqual(s.slotLinks, ['https://www.youtube.com/watch?v=aqz-KE-bpKQ', '', '', 'https://tv.youtube.com/live']);
+  assert.equal(s.defaultService, 'youtube');
+  assert.equal(normalizeSettings({ defaultService: 'netflix' }).defaultService, 'youtubetv');
+  assert.equal(normalizeSettings({}).youtubeCleanPlayer, true);
+});

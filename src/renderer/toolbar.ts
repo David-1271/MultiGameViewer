@@ -112,8 +112,18 @@ function gamePanel(s: UiState, id: SlotId): string {
       ? `<button class="on" data-act="reopen" data-slot="${id}">Reopen game ${v.number}</button>`
       : `<button data-act="activate" data-slot="${id}" title="Give this game keyboard focus">Focus</button>
          <button data-act="reload" data-slot="${id}" title="Reload the page (F5)">Reload</button>
-         <button data-act="guide" data-slot="${id}" title="Open the YouTube TV live guide in this quadrant">Live guide</button>
-         <button data-act="reopen" data-slot="${id}" title="Close and reopen this game's window at YouTube TV home">Reopen</button>`;
+         <button data-act="reopen" data-slot="${id}" title="Close and reopen this game's window">Reopen</button>`;
+  const isYouTubeVideo = v.link.startsWith('https://www.youtube.com/watch?') || v.link.startsWith('https://www.youtube.com/playlist?');
+  const watch = `<div class="row"><input type="text" class="link" data-input="link" data-slot="${id}" spellcheck="false"
+      placeholder="Paste a YouTube or YouTube TV link, or a video ID" value="${esc(v.link)}">
+      <button class="on" data-act="openLink" data-slot="${id}">Open</button></div>
+    <div class="row">
+      <button data-act="openHome" data-service="youtubetv" data-slot="${id}">YouTube TV</button>
+      <button data-act="guide" data-slot="${id}" title="YouTube TV live guide">Live guide</button>
+      <button data-act="openHome" data-service="youtube" data-slot="${id}">YouTube</button>
+      <button data-act="fillTile" data-slot="${id}" title="Show the YouTube video this tile is playing in the player-only view (Ctrl+Alt+V)">Fill tile</button>
+      ${isYouTubeVideo ? `<button data-act="openWatchPage" data-slot="${id}" title="Full YouTube page with chat and comments">Open on YouTube page</button>` : ''}
+    </div>`;
   return `<h2>Game ${v.number}${v.title ? ` — ${esc(v.title)}` : ''}</h2>
     <div class="row"><label>Label <input type="text" data-input="rename" data-slot="${id}" maxlength="60" placeholder="e.g. Chiefs @ Bills" value="${esc(v.name)}"></label></div>
     <h3>Layout</h3>
@@ -123,6 +133,7 @@ function gamePanel(s: UiState, id: SlotId): string {
       <span class="note">Swap with</span>
       ${others.map((o) => `<button data-act="swapWith" data-a="${id}" data-b="${o.id}">${o.number}</button>`).join('')}
     </div>
+    <h3>Watch</h3>${watch}
     <h3>Audio</h3><div class="row">${audio}</div>
     <h3>Window</h3><div class="row">${window_}</div>`;
 }
@@ -147,7 +158,13 @@ function settingsPanel(s: UiState): string {
       ${check('audio.exclusive', 'One game audible at a time', st.audio.exclusive)}
       ${check('audio.followFocus', 'Audio follows the clicked game', st.audio.followFocus, 'Separate sessions only')}
       ${check('autoRestartBrowser', 'Restart a crashed browser automatically', st.autoRestartBrowser)}
+      ${check('youtubeCleanPlayer', 'Play YouTube videos in a player-only view', st.youtubeCleanPlayer, 'Falls back to the full page if a video can’t be embedded')}
+      ${check('youtubeAutoFill', 'Fill the tile when you pick a YouTube video', st.youtubeAutoFill, 'Switches a YouTube page to the player-only view')}
     </div>
+    <div class="row"><label>New games open <select data-input="defaultService">
+      <option value="youtubetv" ${st.defaultService === 'youtubetv' ? 'selected' : ''}>YouTube TV</option>
+      <option value="youtube" ${st.defaultService === 'youtube' ? 'selected' : ''}>YouTube</option>
+    </select></label><span class="note">Games with a pasted link reopen that link instead.</span></div>
     <h3>Browser</h3>
     <div class="row">
       <label>Use <select data-input="browser">
@@ -193,6 +210,7 @@ function statsPanel(s: UiState): string {
 function helpPanel(s: UiState): string {
   return `<h2>Help</h2>
     <div class="note">Pick a game in each quadrant with YouTube TV's own guide (click into the quadrant), or use a game's <b>Live guide</b> button. Hover a game to use its player controls; the player's own full-screen button enlarges that game until you press Esc.</div>
+    <div class="note">Regular YouTube: click a game chip and paste any YouTube link (or video ID) under <b>Watch</b>. Videos play in a player-only view; if one starts muted, click its speaker.</div>
     <div class="note">YouTube TV counts each quadrant as a stream. The base plan allows 3 at once; the 4K Plus add-on allows unlimited streams at home. If the 4th game shows a "too many streams" message, that is the account limit.</div>
     <h3>Keyboard shortcuts</h3>
     <table>${s.hotkeys.map((h) => `<tr><td><kbd>${esc(h.keys)}</kbd></td><td>${esc(h.action)}</td></tr>`).join('')}</table>`;
@@ -302,6 +320,16 @@ document.addEventListener('click', (e) => {
       return send({ type: 'guide', slot });
     case 'reopen':
       return send({ type: 'reopen', slot });
+    case 'openLink': {
+      const input = document.querySelector<HTMLInputElement>(`input[data-input="link"][data-slot="${slot}"]`);
+      return send({ type: 'openLink', slot, link: input?.value ?? '' });
+    }
+    case 'openHome':
+      return send({ type: 'openHome', slot, service: el.dataset.service === 'youtube' ? 'youtube' : 'youtubetv' });
+    case 'openWatchPage':
+      return send({ type: 'openWatchPage', slot });
+    case 'fillTile':
+      return send({ type: 'fillTile', slot });
     case 'resnap':
     case 'restartBrowser':
     case 'openLogs':
@@ -336,6 +364,10 @@ document.addEventListener('change', (e) => {
       return send({ type: 'updateSettings', patch: { browser: el.value as Settings['browser'] } });
     case 'sessionMode':
       return send({ type: 'updateSettings', patch: { sessionMode: el.value as Settings['sessionMode'] } });
+    case 'defaultService':
+      return send({ type: 'updateSettings', patch: { defaultService: el.value as Settings['defaultService'] } });
+    case 'link':
+      return; // opened with the Open button or Enter
   }
 });
 
@@ -345,7 +377,11 @@ document.addEventListener('keydown', (e) => {
     if (state?.swapFrom !== null) send({ type: 'cancelSwap' });
     setPanel(null);
   }
-  if (e.key === 'Enter' && e.target instanceof HTMLInputElement) e.target.blur();
+  if (e.key === 'Enter' && e.target instanceof HTMLInputElement) {
+    const t = e.target;
+    if (t.dataset.input === 'link') send({ type: 'openLink', slot: Number(t.dataset.slot) as SlotId, link: t.value });
+    t.blur();
+  }
 });
 
 window.mgv.onState((s) => {

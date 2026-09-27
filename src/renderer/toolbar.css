@@ -299,3 +299,9 @@ h2 .note {
   margin: 0 0 0 6px;
   font-weight: 400;
 }
+
+input[type='text'].link {
+  width: 520px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+}

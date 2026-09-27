@@ -2,7 +2,8 @@
 // lives only inside the browser's own profile, managed by the browser itself.
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { BrowserChoice, Rect, SessionMode, Settings } from '../shared/types';
+import type { BrowserChoice, Rect, Service, SessionMode, Settings } from '../shared/types';
+import { resolveLink } from './links';
 import { normalizeAudio, defaultAudio } from './audio';
 import { defaultLayout, normalizeLayout } from './layout';
 
@@ -17,6 +18,10 @@ export function defaultSettings(): Settings {
     sessionMode: 'shared',
     startUrl: YOUTUBE_TV_HOME,
     guideUrl: YOUTUBE_TV_LIVE_GUIDE,
+    defaultService: 'youtubetv',
+    slotLinks: ['', '', '', ''],
+    youtubeCleanPlayer: true,
+    youtubeAutoFill: true,
     display: { id: null, bounds: null },
     layout: defaultLayout(),
     fullscreen: false,
@@ -69,6 +74,15 @@ export function normalizeSettings(raw: unknown): Settings {
   const r = raw as Record<string, unknown>;
   const browser: BrowserChoice = r.browser === 'chrome' || r.browser === 'edge' || r.browser === 'auto' ? r.browser : d.browser;
   const sessionMode: SessionMode = r.sessionMode === 'separate' ? 'separate' : 'shared';
+  const defaultService: Service = r.defaultService === 'youtube' ? 'youtube' : 'youtubetv';
+  const links = Array.isArray(r.slotLinks) ? r.slotLinks : [];
+  // Saved links are re-validated on load; anything unusable becomes '' (home page).
+  const slotLinks = [0, 1, 2, 3].map((i) => {
+    const v = links[i];
+    if (typeof v !== 'string' || !v) return '';
+    const res = resolveLink(v);
+    return 'error' in res ? '' : res.link;
+  });
   const disp = (r.display ?? {}) as Record<string, unknown>;
   const names = Array.isArray(r.slotNames) ? r.slotNames : [];
   const calibration: Record<string, number> = {};
@@ -84,6 +98,10 @@ export function normalizeSettings(raw: unknown): Settings {
     sessionMode,
     startUrl: safeHttpsUrl(r.startUrl, d.startUrl),
     guideUrl: safeHttpsUrl(r.guideUrl, d.guideUrl),
+    defaultService,
+    slotLinks,
+    youtubeCleanPlayer: bool(r.youtubeCleanPlayer, d.youtubeCleanPlayer),
+    youtubeAutoFill: bool(r.youtubeAutoFill, d.youtubeAutoFill),
     display: { id: typeof disp.id === 'number' ? disp.id : null, bounds: rectOrNull(disp.bounds) },
     layout: normalizeLayout(r.layout),
     fullscreen: bool(r.fullscreen, d.fullscreen),

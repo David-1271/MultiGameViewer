@@ -11,6 +11,7 @@ export function looksLikeSignIn(title: string): boolean {
 export function cleanTitle(title: string): string {
   let t = title.trim();
   t = t.replace(/\s+[-–—|]\s+(Google Chrome|Microsoft Edge|Personal - Microsoft​? Edge)$/i, '');
-  t = t.replace(/\s+[-–—|]\s+YouTube TV$/i, '').replace(/^YouTube TV\s+[-–—|]\s+/i, '');
-  return t === 'YouTube TV' ? '' : t;
+  t = t.replace(/\s+[-–—|]\s+YouTube( TV)?$/i, '').replace(/^YouTube TV\s+[-–—|]\s+/i, '');
+  t = t.replace(/^\(\d+\)\s+/, ''); // YouTube's "(3) " notification-count prefix
+  return t === 'YouTube TV' || t === 'YouTube' ? '' : t;
 }

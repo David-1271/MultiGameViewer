@@ -8,7 +8,7 @@ export interface Hotkey {
   accelerator: string;
   keys: string;
   action: string;
-  command: UiCommand | 'cycleAudio' | 'toggleToolbar' | 'toggleLabels';
+  command: UiCommand | 'cycleAudio' | 'toggleToolbar' | 'toggleLabels' | 'fillFocused';
 }
 
 export function hotkeyTable(): Hotkey[] {
@@ -28,6 +28,7 @@ export function hotkeyTable(): Hotkey[] {
     { accelerator: 'Control+Alt+T', keys: 'Ctrl+Alt+T', action: 'Show / hide the toolbar', command: 'toggleToolbar' },
     { accelerator: 'Control+Alt+L', keys: 'Ctrl+Alt+L', action: 'Labels on/off', command: 'toggleLabels' },
     { accelerator: 'Control+Alt+R', keys: 'Ctrl+Alt+R', action: 'Re-snap all windows', command: { type: 'resnap' } },
+    { accelerator: 'Control+Alt+V', keys: 'Ctrl+Alt+V', action: 'Fill the focused tile with its YouTube video', command: 'fillFocused' },
     { accelerator: 'Control+Alt+H', keys: 'Ctrl+Alt+H', action: 'Minimize everything', command: { type: 'minimize' } },
   ];
 }

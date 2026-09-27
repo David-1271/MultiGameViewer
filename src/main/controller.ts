@@ -13,6 +13,7 @@ import { computeLayout, gapMasks, gridCells, physicalToLocalDip, SLOT_IDS, type 
 import { setMode, spotlight, swapSlots, toggleSolo } from '../core/layout';
 import { stackingOrder, type StackItem } from '../core/stacking';
 import { defaultSettings, SettingsStore } from '../core/settings';
+import { resolveLink, YOUTUBE_HOME, type YouTubeTarget } from '../core/links';
 import { cleanTitle, looksLikeSignIn } from '../core/titles';
 import { BrowserHost } from './browser/host';
 import { Hotkeys, hotkeyViews, type Hotkey } from './hotkeys';
@@ -22,6 +23,8 @@ import { WindowPlacer } from './placer';
 import { startDevControl } from './devControl';
 import { createTray } from './tray';
 import { Overlays } from './ui/overlays';
+import { UrlReader } from './urlReader';
+import { YouTubePlayerServer } from './youtubePlayer';
 import { AudioSessionController } from './win32/audio';
 import { C } from './win32/native';
 import { privateBytes, sampleCpuPercent, snapshotProcesses, type ProcInfo } from './win32/processes';
@@ -41,6 +44,9 @@ interface Slot {
   needsPlace: boolean;
   placedAt: number;
   opening: boolean;
+  /** The user chose "Open on YouTube page": don't auto-fill this window. */
+  watchPageOptOut: boolean;
+  fillTimer: NodeJS.Timeout | null;
 }
 
 type Banner = NonNullable<UiState['banner']> & { sticky?: boolean };
@@ -55,7 +61,7 @@ export class Controller {
   private tray: Tray | null = null;
   private browser: BrowserInstall | null = null;
   private hosts: BrowserHost[] = [];
-  private readonly slots: Slot[] = SLOT_IDS.map((id) => ({ id, hwnd: null, phase: 'closed', title: '', expected: null, needsPlace: false, placedAt: 0, opening: false }));
+  private readonly slots: Slot[] = SLOT_IDS.map((id) => ({ id, hwnd: null, phase: 'closed', title: '', expected: null, needsPlace: false, placedAt: 0, opening: false, watchPageOptOut: false, fillTimer: null }));
   private display!: DisplayInfo;
   private areaPhys: Rect = { x: 0, y: 0, width: 0, height: 0 };
   private areaDip: Rect = { x: 0, y: 0, width: 0, height: 0 };
@@ -89,6 +95,8 @@ export class Controller {
   private displayTimer: NodeJS.Timeout | null = null;
   private readonly timers: NodeJS.Timeout[] = [];
   private readonly gapMasks = new GapMasks();
+  private readonly player: YouTubePlayerServer;
+  private readonly urls: UrlReader;
   private readonly gpu: GpuSampler;
   private maskWindows: { hwnd: number; rect: Rect }[] = [];
   private unhookWinEvents: (() => void) | null = null;
@@ -105,6 +113,8 @@ export class Controller {
     this.audio = new AudioSessionController((m, e) => log.warn(m, e));
     this.hotkeys = new Hotkeys((h) => this.runHotkey(h), log);
     this.gpu = new GpuSampler((m) => log.warn(m));
+    this.player = new YouTubePlayerServer(log);
+    this.urls = new UrlReader(log);
   }
 
   private get settings() {
@@ -129,6 +139,7 @@ export class Controller {
     for (const ev of ['display-added', 'display-removed', 'display-metrics-changed'] as const) {
       screen.on(ev as 'display-added', () => this.onDisplaysChanged());
     }
+    await this.player.start();
     this.computeArea();
     this.overlays.showBackdrop();
     this.startTimers();
@@ -173,11 +184,12 @@ export class Controller {
       const needCalibration = this.settings.calibration[browserKey(this.browser!)] === undefined;
       if (needCalibration && adopted === 0) await this.calibrate();
 
-      this.signInMode = this.settings.sessionMode === 'shared' && !this.settings.signInCompleted && adopted === 0;
+      const wantsTv = this.settings.defaultService === 'youtubetv' && !this.settings.slotLinks[0];
+      this.signInMode = wantsTv && this.settings.sessionMode === 'shared' && !this.settings.signInCompleted && adopted === 0;
       if (this.signInMode) {
         this.layoutOverride = { ...this.settings.layout, mode: 'solo', focus: 0 };
         this.setBanner({
-          text: 'Sign in to YouTube TV in this window (normal Google sign-in). When you can see the YouTube TV home screen, press Continue.',
+          text: 'Sign in to YouTube TV in this window (normal Google sign-in). When you can see the YouTube TV home screen, press Continue. Only watching regular YouTube? Just press Continue.',
           kind: 'info',
           sticky: true,
           action: { label: 'Continue → open all four games', command: { type: 'signInDone' } },
@@ -189,7 +201,7 @@ export class Controller {
       this.applyLayout();
 
       const toOpen = this.signInMode ? [this.slots[0]] : this.slots;
-      for (const slot of toOpen) if (!slot.hwnd) await this.openSlot(slot, this.settings.startUrl);
+      for (const slot of toOpen) if (!slot.hwnd) await this.openSlot(slot, this.launchUrlFor(slot.id));
       if (this.calibrationHwnd) {
         win.requestClose(this.calibrationHwnd);
         this.calibrationHwnd = null;
@@ -266,8 +278,75 @@ export class Controller {
     this.devServer?.close();
     this.gapMasks.dispose();
     this.gpu.dispose();
+    this.player.stop();
+    this.urls.dispose();
     this.overlays.destroy();
     this.tray?.destroy();
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // What each game opens
+  // ---------------------------------------------------------------------------------------
+
+  private homeUrl(service: 'youtubetv' | 'youtube'): string {
+    return service === 'youtube' ? YOUTUBE_HOME : this.settings.startUrl;
+  }
+
+  /** A game's saved link (YouTube videos via the clean player page), else its home page. */
+  private launchUrlFor(slot: SlotId): string {
+    const link = this.settings.slotLinks[slot];
+    if (!link) return this.homeUrl(this.settings.defaultService);
+    const r = resolveLink(link);
+    if ('error' in r) return this.homeUrl(this.settings.defaultService);
+    if (r.youtube && this.settings.youtubeCleanPlayer && this.player.available) return this.player.urlFor(r.youtube);
+    return r.link;
+  }
+
+  private saveLink(slot: SlotId, link: string): void {
+    const links = [...this.settings.slotLinks];
+    links[slot] = link;
+    this.store.update({ slotLinks: links });
+  }
+
+  /** YouTube watch pages are titled "<video> - YouTube"; check shortly after the title settles. */
+  private maybeAutoFill(slot: Slot): void {
+    if (!this.settings.youtubeAutoFill || !this.settings.youtubeCleanPlayer || !this.player.available) return;
+    if (slot.watchPageOptOut || slot.opening || !/\S - YouTube$/.test(slot.title)) return;
+    if (slot.fillTimer) clearTimeout(slot.fillTimer);
+    slot.fillTimer = setTimeout(() => {
+      slot.fillTimer = null;
+      void this.fillTile(slot, true);
+    }, 1200);
+  }
+
+  /**
+   * Switch a tile showing a YouTube watch page to the player-only view of the same video.
+   * The page address is read through UI Automation (accessibility); nothing is scripted.
+   */
+  private async fillTile(slot: Slot, auto: boolean): Promise<void> {
+    const hwnd = slot.hwnd;
+    if (!hwnd || slot.opening) return;
+    const url = await this.urls.read(hwnd, auto ? 3 : 4);
+    if (slot.hwnd !== hwnd || slot.opening) return; // replaced meanwhile
+    const r = url ? resolveLink(url) : null;
+    if (!r || 'error' in r || !r.youtube) {
+      if (!auto) this.setBanner({ text: url ? 'This tile isn\u2019t showing a YouTube video.' : 'Couldn\u2019t tell which page this tile is showing.', kind: 'info' });
+      return;
+    }
+    const keyOf = (t: YouTubeTarget | null) => (t ? (t.kind === 'video' ? t.id : t.list) : null);
+    const saved = this.settings.slotLinks[slot.id] ? resolveLink(this.settings.slotLinks[slot.id]) : null;
+    const savedKey = saved && !('error' in saved) ? keyOf(saved.youtube) : null;
+    if (auto && slot.watchPageOptOut) return;
+    if (keyOf(r.youtube) === savedKey && !slot.watchPageOptOut) {
+      // The player-only view was already tried for this video and we're on its watch page:
+      // the owner doesn't allow it to be embedded.
+      if (!auto) this.setBanner({ text: 'This video\u2019s owner doesn\u2019t allow it to play outside YouTube, so it stays on the YouTube page.', kind: 'info' });
+      return;
+    }
+    this.log.info(`Game ${slot.id + 1}: showing ${r.link} in the player-only view`);
+    slot.watchPageOptOut = false;
+    this.saveLink(slot.id, r.link);
+    await this.replaceSlot(slot, this.launchUrlFor(slot.id));
   }
 
   // ---------------------------------------------------------------------------------------
@@ -399,7 +478,7 @@ export class Controller {
       this.restartLog.push(now);
       this.setBanner({ text: `${host.browser.name} stopped unexpectedly — restarting the affected game(s)…`, kind: 'warn' });
       setTimeout(() => {
-        for (const s of slots) if (!s.hwnd) void this.openSlot(s, this.settings.startUrl);
+        for (const s of slots) if (!s.hwnd) void this.openSlot(s, this.launchUrlFor(s.id));
       }, 1500);
     } else {
       this.setBanner({
@@ -559,6 +638,7 @@ export class Controller {
       const title = win.windowTitle(h);
       if (title !== slot.title) {
         slot.title = title;
+        this.maybeAutoFill(slot);
         this.push();
       }
       if (win.isHung(h)) {
@@ -609,11 +689,13 @@ export class Controller {
   private trackForeground(): void {
     if (this.quitting) return;
     const fg = win.foregroundWindow();
-    if (fg === this.lastFg) return;
-    this.lastFg = fg;
     const slot = this.slots.find((s) => s.hwnd === fg) ?? null;
+    // Re-evaluated every tick, not only when the foreground window changes: a game window can
+    // be focused before it has been attached to its slot (e.g. while the games are opening).
     const ours = !!slot || this.overlays.ownHwnds().has(fg) || this.gapMasks.owns(fg) || (fg !== 0 && this.browserPids.has(win.windowPid(fg)));
     this.setActive(ours);
+    if (fg === this.lastFg) return;
+    this.lastFg = fg;
     // Activating a game puts it on top of the stack; re-stack so its hidden title bar goes
     // back under the game above it.
     if (slot) this.applyZOrder();
@@ -786,6 +868,11 @@ export class Controller {
       } else this.showControls(true);
       return;
     }
+    if (h.command === 'fillFocused') {
+      const s = this.slots.find((x) => x.hwnd === win.foregroundWindow());
+      if (s) void this.fillTile(s, false);
+      return;
+    }
     if (h.command === 'toggleLabels') return this.command({ type: 'updateSettings', patch: { showLabels: !this.settings.showLabels } });
     if (h.command.type === 'setMode' && h.command.mode === 'spotlight') {
       const fgSlot = this.slots.find((s) => s.hwnd === win.foregroundWindow());
@@ -836,16 +923,37 @@ export class Controller {
       }
       case 'reload': {
         const h = slotOf(cmd.slot).hwnd;
-        if (!h) return void this.openSlot(slotOf(cmd.slot), this.settings.startUrl);
+        if (!h) return void this.openSlot(slotOf(cmd.slot), this.launchUrlFor(cmd.slot));
         // Reload exactly like the user pressing F5 in that game.
         win.focusWindow(h);
         setTimeout(() => win.foregroundWindow() === h && win.tapKey(C.VK_F5), 150);
         return;
       }
       case 'guide':
+        this.saveLink(cmd.slot, '');
         return void this.replaceSlot(slotOf(cmd.slot), this.settings.guideUrl);
+      case 'fillTile':
+        return void this.fillTile(slotOf(cmd.slot), false);
+      case 'openLink': {
+        slotOf(cmd.slot).watchPageOptOut = false;
+        const r = resolveLink(cmd.link);
+        if ('error' in r) return this.setBanner({ text: r.error, kind: 'warn' });
+        this.saveLink(cmd.slot, r.link);
+        return void this.replaceSlot(slotOf(cmd.slot), this.launchUrlFor(cmd.slot));
+      }
+      case 'openHome':
+        slotOf(cmd.slot).watchPageOptOut = false;
+        // Remember the choice, unless it is simply the default service's home page.
+        this.saveLink(cmd.slot, cmd.service === this.settings.defaultService ? '' : this.homeUrl(cmd.service));
+        return void this.replaceSlot(slotOf(cmd.slot), this.homeUrl(cmd.service));
+      case 'openWatchPage': {
+        // The owner may block embedding, or the user wants comments/chat: full YouTube page.
+        const link = this.settings.slotLinks[cmd.slot];
+        if (!link) return;
+        return void this.replaceSlot(slotOf(cmd.slot), link).then(() => (slotOf(cmd.slot).watchPageOptOut = true));
+      }
       case 'reopen':
-        return void this.replaceSlot(slotOf(cmd.slot), this.settings.startUrl);
+        return void this.replaceSlot(slotOf(cmd.slot), this.launchUrlFor(cmd.slot));
       case 'reloadAll':
         this.clearBanner();
         this.toolbarPinned = false;
@@ -921,13 +1029,13 @@ export class Controller {
     this.clearBanner();
     this.store.update({ signInCompleted: true });
     this.applyLayout();
-    for (const s of this.slots) if (!s.hwnd) await this.openSlot(s, this.settings.startUrl);
+    for (const s of this.slots) if (!s.hwnd) await this.openSlot(s, this.launchUrlFor(s.id));
     this.applyLayout();
   }
 
   private async reloadAll(): Promise<void> {
     for (const s of this.slots) {
-      if (!s.hwnd) await this.openSlot(s, this.settings.startUrl);
+      if (!s.hwnd) await this.openSlot(s, this.launchUrlFor(s.id));
       else {
         this.handle({ type: 'reload', slot: s.id });
         await sleep(400);
@@ -987,6 +1095,7 @@ export class Controller {
       id: slot.id,
       number: slot.id + 1,
       name: this.settings.slotNames[slot.id],
+      link: this.settings.slotLinks[slot.id],
       title: slot.phase === 'starting' ? '' : cleanTitle(slot.title),
       phase: slot.phase,
       muted: this.settings.sessionMode === 'shared' ? this.settings.audio.masterMuted : effectiveMuted(this.settings.audio, slot.id),

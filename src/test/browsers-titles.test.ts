@@ -63,5 +63,8 @@ test('window titles: sign-in detection and clean labels', () => {
   assert.equal(looksLikeSignIn('YouTube TV - Watch & DVR Live Sports, Shows & News'), false);
   assert.equal(cleanTitle('Chiefs at Bills - YouTube TV'), 'Chiefs at Bills');
   assert.equal(cleanTitle('YouTube TV'), '');
+  assert.equal(cleanTitle('Big Buck Bunny 60fps 4K - YouTube'), 'Big Buck Bunny 60fps 4K');
+  assert.equal(cleanTitle('(3) Lofi beats - YouTube'), 'Lofi beats');
+  assert.equal(cleanTitle('YouTube'), '');
   assert.equal(cleanTitle('YouTube TV - Watch & DVR Live Sports, Shows & News'), 'Watch & DVR Live Sports, Shows & News');
 });

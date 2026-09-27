@@ -1,6 +1,6 @@
 # MultiGame Viewer
 
-Watch four YouTube TV games at once on one Windows monitor, in a clean 2×2 grid where each game
+Watch four YouTube TV games (or regular YouTube videos and live streams) at once on one Windows monitor, in a clean 2×2 grid where each game
 fills exactly one quarter of the screen. There are no tabs, address bars or title bars between
 them.
 
@@ -25,6 +25,8 @@ reasoning and test results are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 * **Spotlight**: one game large (¾ width), the other three stacked beside it.
 * **Solo**: one game fills the screen while the others keep playing behind it; press again to
   go back. The player's own full-screen button also works; press Esc to return.
+* **Regular YouTube too:** paste any YouTube link (video, live stream, Shorts, playlist) into a
+  quadrant. It plays in a player-only view that fills the tile, and mixes freely with YouTube TV.
 * **Swap** any two games, **rename** them, optional **labels** and **gaps**.
 * **Full-screen mode** covers the taskbar. **Minimize/restore** all four together.
 * **Monitor picker** for multi-monitor setups; remembers layout, monitor and names.
@@ -84,6 +86,33 @@ npm start
 5. **Exit** closes the four game windows too. Next launch restores layout, monitor, labels and
    audio settings.
 
+### Watching regular YouTube
+
+1. Show the toolbar and click a game's chip (1–4).
+2. Under **Watch**, paste a link and press **Enter** (or **Open**). Any of these work:
+   `youtube.com/watch?v=…`, `youtu.be/…`, `/live/…`, `/shorts/…`, playlists, a start time
+   (`?t=90`), or just the 11-character video ID.
+3. The video plays in a **player-only view**, with no YouTube page around it. Links to
+   channels, search results or the YouTube home page open as normal pages.
+4. **Browsing works too:** open **YouTube** in a quadrant, click any video, and the tile switches
+   to the player-only view by itself about a second later. The video restarts from the beginning
+   when it switches. **Fill tile** (Ctrl+Alt+V) does it on demand, and Settings can turn the
+   automatic switch off.
+5. The quadrant remembers its link and reopens it next time. **YouTube TV**, **Live guide** and
+   **YouTube** switch the quadrant back to a home page.
+
+Notes:
+
+* **Autoplay:** if Chrome won't autoplay with sound (it often blocks sound until you've
+  interacted with the site), the video starts **muted**. Click the player's speaker to unmute.
+* **Embedding blocked:** some owners don't allow their videos to be embedded. Those switch to
+  the normal YouTube watch page automatically. **Open on YouTube page** does that on purpose,
+  for example to see live chat.
+* **Sign-in:** public videos need none. For members-only or Premium, sign in on youtube.com in
+  any quadrant; it's the same Google sign-in as YouTube TV.
+* To make new games open YouTube instead of YouTube TV, set Settings → **New games open**:
+  YouTube. That also skips the first-run YouTube TV sign-in step.
+
 ### Keyboard shortcuts
 
 These are active only while a game or the toolbar has focus, so they never steal keys from
@@ -100,6 +129,7 @@ other apps.
 | Ctrl+Alt+T | Show/hide toolbar |
 | Ctrl+Alt+L | Labels on/off |
 | Ctrl+Alt+R | Re-snap windows |
+| Ctrl+Alt+V | Fill the focused tile with its YouTube video (player-only view) |
 | Ctrl+Alt+H | Minimize everything |
 
 If another app already owns a shortcut, it's skipped and noted in the log.
@@ -112,6 +142,10 @@ If another app already owns a shortcut, it's skipped and noted in the log.
   * *Separate*: one browser per game; the toolbar can mute and solo each game's audio.
     Sign in once per game (each is remembered). About 4× the browser overhead.
 * **Browser**: Auto (Chrome, then Edge), Chrome, or Edge.
+* **New games open**: YouTube TV or YouTube, for games without a pasted link.
+* **Play YouTube videos in a player-only view**: turn off to always use the full watch page.
+* **Fill the tile when you pick a YouTube video**: automatic switch after you click a video on a
+  YouTube page.
 * **Gap between games**: 0 = seamless.
 * **Extra top crop**: raise it if a sliver of title bar ever shows above a game.
 * **Keep games snapped**: puts windows back if something moves them.
@@ -154,9 +188,11 @@ src/
     frame.ts               Title-bar calibration and window insets
     settings.ts            Schema, validation, atomic persistence
     browsers.ts titles.ts  Browser discovery/launch flags; window-title helpers
+    links.ts               Parsing pasted links; the YouTube player page
   main/
     main.ts controller.ts  Entry point; orchestration, watchdog, recovery, commands
     placer.ts              Places a browser window so its content fills a quadrant
+    youtubePlayer.ts       Serves the player page on 127.0.0.1 (loopback only)
     browser/host.ts        Launch/hand-off, window discovery, crash detection, shutdown
     win32/                 koffi bindings: windows, processes, Core Audio, GPU counters,
                            WinEvent hook, native gap masks
@@ -187,7 +223,8 @@ Runtime dependency: `koffi` (prebuilt FFI). Dev dependencies: `electron`, `types
   to reset it.
 * **Per-game audio needs Separate sessions** (one browser per game). In Shared mode only a
   master mute is available from the toolbar.
-* The toolbar can't list or pick games; you choose them in YouTube TV's own guide. The viewer
+* The toolbar can't list or pick YouTube TV games; you choose them in YouTube TV's own guide.
+  (Regular YouTube links can be pasted directly.) The viewer
   deliberately doesn't read or automate the page.
 * Reload presses F5 in the game. It needs the viewer to have focus (toolbar click or hotkey).
 * Windows only. Tested on Windows 11 with Chrome 153 and Edge 154.
@@ -205,6 +242,8 @@ Runtime dependency: `koffi` (prebuilt FFI). Dev dependencies: `electron`, `types
 | Windows got moved or covered | Toolbar → Settings → **Re-snap windows** (Ctrl+Alt+R). |
 | Toolbar won't appear | Click into a game first (the viewer must be focused), then touch the top edge; or use the tray icon → Show controls. |
 | A shortcut does nothing | Another app owns it (see the log via Settings → Open log folder). |
+| A YouTube video says "Video unavailable" | The video is private, region-locked, or an ended live stream. Paste a different link, or use **Open on YouTube page**. |
+| A YouTube video has no sound | It started muted (browser autoplay rule). Click the player's speaker icon. |
 | Start from scratch | Quit, then delete `%APPDATA%\MultiGame Viewer\settings.json`. Delete `%LOCALAPPDATA%\MultiGameViewer\profiles` to sign out. |
 
 ## Future improvements

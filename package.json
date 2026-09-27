@@ -39,7 +39,9 @@
     ],
     "asarUnpack": [
       "node_modules/koffi/**",
-      "node_modules/@koromix/**"
+      "node_modules/@koromix/**",
+      "dist/main/win32/uia.js",
+      "dist/main/win32/uiaWorker.js"
     ],
     "win": {
       "target": [
